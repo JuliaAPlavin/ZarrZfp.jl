@@ -1,7 +1,7 @@
 name = "ZarrZfp"
 uuid = "c0dec0de-cafe-face-babe-c0ffeec0ffee"
 authors = ["Alexander Plavin <alexander@plav.in>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
