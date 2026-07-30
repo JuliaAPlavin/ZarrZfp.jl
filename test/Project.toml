@@ -1,6 +1,16 @@
 [deps]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+CompatHelperLocal = "5224ae11-6099-4aaa-941d-3aab004bd678"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 TestItems = "1c621080-faea-4a02-84b6-bbd5e436b8fe"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 ZfpCompression = "43441a71-1662-41c6-b8ea-40ed1525242b"
+
+[compat]
+Aqua = "0.8.16"
+CompatHelperLocal = "0.1.29"
+Test = "1.10"
+TestItemRunner = "1.1.5"
+TestItems = "1.0.0"
