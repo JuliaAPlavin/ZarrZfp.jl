@@ -122,6 +122,43 @@ end
 end
 
 
+@testitem "zuncompress! decodes into the given buffer without an extra copy" begin
+    using Zarr, ZarrZfp
+
+    orig = Float32[sin(x) * cos(y) + 0.2f0 * z
+                   for x in range(0, 2π, length = 40), y in range(0, 2π, length = 32), z in 1:8]
+
+    # lossless: decode reproduces the original exactly, in dest's own memory, allocating no full buffer
+    let z = ZfpCompressor(), comp = Zarr.zcompress(orig, z), dest = similar(orig)
+        @test Zarr.zuncompress!(dest, comp, z) === dest
+        @test dest == orig
+        @test (@allocated Zarr.zuncompress!(dest, comp, z)) < sizeof(orig) ÷ 4
+    end
+
+    # lossy modes: in-place decode matches the allocating path bit-for-bit
+    for z in (ZfpCompressor(tol = 1e-3), ZfpCompressor(precision = 24), ZfpCompressor(rate = 16))
+        comp = Zarr.zcompress(orig, z)
+        dest = similar(orig)
+        @test Zarr.zuncompress!(dest, comp, z) == Zarr.zuncompress(comp, z, Float32)
+    end
+
+    # length-1 chunk axis: dest keeps the full shape while the header carries the squeezed shape
+    let plane = reshape(orig[:, :, 1:1], size(orig, 1), size(orig, 2), 1),
+        comp = Zarr.zcompress(plane, ZfpCompressor()), dest = similar(plane)
+        @test Zarr.zuncompress!(dest, comp, ZfpCompressor()) === dest
+        @test dest == plane
+    end
+
+    # a fill-as-missing chunk buffer is a non-dense SenMissArray, which zfp can't decode into: it must
+    # take Zarr's allocate-and-copy fallback (our in-place method is restricted to `DenseArray`), not crash
+    let dir = mktempdir()
+        Zarr.zcreate(Float32, size(orig)...; path = dir, chunks = size(orig),
+                     compressor = ZfpCompressor(), fill_value = NaN32)[:, :, :] = orig
+        @test Zarr.zopen(dir; fill_as_missing = true)[:, :, :] == orig
+    end
+end
+
+
 @testitem "_" begin
     import Aqua
     Aqua.test_all(ZarrZfp; ambiguities=false)

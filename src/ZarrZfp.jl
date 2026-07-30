@@ -2,7 +2,7 @@ module ZarrZfp
 
 import Zarr
 import JSON
-using ZfpCompression: zfp_compress, zfp_decompress
+using ZfpCompression: zfp_compress, zfp_decompress, zfp_decompress!
 
 export ZfpCompressor
 
@@ -49,6 +49,11 @@ Zarr.zcompress(a, z::ZfpCompressor) = zfp_compress(_squeeze(a); _zfp_kw(z)...)
 
 # zfp stores type and shape in the stream header.
 Zarr.zuncompress(a, ::ZfpCompressor, T) = zfp_decompress(a)
+
+# In-place read path: decode into Zarr's own dense output buffer, skipping the allocate-and-copy fallback
+# (a non-dense fill-as-missing buffer isn't handled by zfp, so it takes that fallback). Squeeze length-1
+# axes as `zcompress` does, so `data`'s shape matches the shape recorded in the header.
+Zarr.zuncompress!(data::DenseArray, compressed, ::ZfpCompressor) = (zfp_decompress!(_squeeze(data), compressed); data)
 
 function Zarr.getCompressor(::Type{ZfpCompressor}, d::Dict)
     m = d["mode"]

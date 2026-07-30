@@ -11,5 +11,5 @@ ZfpCompression = "43441a71-1662-41c6-b8ea-40ed1525242b"
 [compat]
 JSON = "1.6.1"
 Zarr = "0.10.1"
-ZfpCompression = "0.2.4"
+ZfpCompression = "0.2.5"
 julia = "1.10"
