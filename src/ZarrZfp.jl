@@ -41,7 +41,11 @@ _zfp_kw(z::ZfpCompressor) =
     z.mode === Rate      ? (; rate = z.rate) :
                            NamedTuple()
 
-Zarr.zcompress(a, z::ZfpCompressor) = zfp_compress(a; _zfp_kw(z)...)
+# zfp pads every field axis to a full block, so a length-1 axis wastes a whole block.
+# Squeeze length-1 axes before encoding; zfp records the shape, so decode stays unchanged.
+_squeeze(a) = (dims = Tuple(findall(isone, size(a)));
+               length(dims) < ndims(a) ? dropdims(a; dims) : a)
+Zarr.zcompress(a, z::ZfpCompressor) = zfp_compress(_squeeze(a); _zfp_kw(z)...)
 
 # zfp stores type and shape in the stream header.
 Zarr.zuncompress(a, ::ZfpCompressor, T) = zfp_decompress(a)
