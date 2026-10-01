@@ -1,10 +1,11 @@
 module ZarrZfp
 
 import ZarrCore
+using ZarrCore.Codecs.V3Codecs: V3Codecs, V3Codec
 import JSON
 using ZfpCompression: zfp_compress, zfp_decompress, zfp_decompress!
 
-export ZfpCompressor
+export ZfpCompressor, ZfpyCodec
 
 @enum ZfpMode Rate=2 Precision=3 Accuracy=4 Reversible=5
 
@@ -64,21 +65,58 @@ function ZarrCore.getCompressor(::Type{ZfpCompressor}, d::Dict)
         throw(ArgumentError("Unsupported zfp mode $m (zfp `expert` mode is not supported)"))
 end
 
-function JSON.lower(z::ZfpCompressor)
-    Dict("id"        => "zfpy",
-         "mode"      => Int(z.mode),
+# The numcodecs `zfpy` parameter dict, shared by the v2 compressor and the v3 codec.
+_zfpy_config(z::ZfpCompressor) =
+    Dict("mode"      => Int(z.mode),
          "tolerance" => z.mode === Accuracy  ? z.tol       : -1,
          "rate"      => z.mode === Rate      ? z.rate      : -1,
          "precision" => z.mode === Precision ? z.precision : -1)
+
+JSON.lower(z::ZfpCompressor) = merge(Dict("id" => "zfpy"), _zfpy_config(z))
+
+"""
+    ZfpyCodec(; tol, precision, rate)
+
+The Zarr v3 array->bytes codec named `numcodecs.zfpy`, as in by zarr-python. The same zfp stream
+(with header) and the same parameters as [`ZfpCompressor`](@ref).
+
+```julia
+zcreate(Float32, dims...; zarr_format = 3, codecs = (ZfpyCodec(tol = 1e-3),))
+```
+"""
+struct ZfpyCodec <: V3Codec{:array, :bytes}
+    compressor::ZfpCompressor
 end
+ZfpyCodec(; kw...) = ZfpyCodec(ZfpCompressor(; kw...))
+
+V3Codecs.name(::ZfpyCodec) = "zfpy"
+
+V3Codecs.codec_encode(c::ZfpyCodec, data::AbstractArray) = ZarrCore.zcompress(data, c.compressor)
+
+# The header carries the encoded shape, which may or may not be squeezed,
+# so decode from the header and restore the chunk shape afterwards.
+function V3Codecs.codec_decode(c::ZfpyCodec, encoded::Vector{UInt8}, ::Type{T}, shape::NTuple{N,Int}; fill_value = nothing) where {T,N}
+    decoded = ZarrCore.zuncompress(encoded, c.compressor, T)
+    eltype(decoded) === T || throw(ArgumentError("zfp stream holds $(eltype(decoded)) values, but the array element type is $T"))
+    reshape(decoded, shape)
+end
+
+JSON.lower(c::ZfpyCodec) = Dict("name" => "numcodecs.zfpy", "configuration" => _zfpy_config(c.compressor))
 
 """
     ZarrZfp.register!()
 
-Register `ZfpCompressor` with ZarrCore under the Zarr v2 compressor name `"zfpy"`.
+Register `ZfpCompressor` with ZarrCore under the Zarr v2 compressor name `"zfpy"`, and `ZfpyCodec`
+under the Zarr v3 codec name `"zfpy"` (`"numcodecs.zfpy"` in metadata).
 Runs automatically when the package loads unless the ZarrCore `RegisterAtInit` preference is disabled.
 """
-register!() = (ZarrCore.compressortypes["zfpy"] = ZfpCompressor; nothing)
+function register!()
+    ZarrCore.compressortypes["zfpy"] = ZfpCompressor
+    V3Codecs.register_codec("zfpy", ZfpyCodec) do config, ctx
+        ZfpyCodec(ZarrCore.getCompressor(ZfpCompressor, config))
+    end
+    nothing
+end
 
 # Registry mutation must happen at runtime, not during precompilation.
 __init__() = ZarrCore.should_register_at_init() && register!()

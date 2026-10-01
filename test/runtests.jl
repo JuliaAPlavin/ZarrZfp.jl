@@ -54,9 +54,13 @@ end
     @test haskey(ZarrCore.compressortypes, "zfpy")
     @test ZarrCore.compressortypes["zfpy"] === ZfpCompressor
 
+    @test ZarrCore.Codecs.V3Codecs.codec_parsers["zfpy"].return_type === ZfpyCodec
+
     delete!(ZarrCore.compressortypes, "zfpy")
+    delete!(ZarrCore.Codecs.V3Codecs.codec_parsers, "zfpy")
     ZarrZfp.register!()
     @test ZarrCore.compressortypes["zfpy"] === ZfpCompressor
+    @test ZarrCore.Codecs.V3Codecs.codec_parsers["zfpy"].return_type === ZfpyCodec
 
     for z in (ZfpCompressor(), ZfpCompressor(tol = 1e-3), ZfpCompressor(precision = 20), ZfpCompressor(rate = 16))
         @test ZarrCore.getCompressor(ZfpCompressor, JSON.lower(z)) == z
@@ -188,4 +192,78 @@ end
     arr[:, :] = orig
     @test filesize(joinpath(dir, "0.0")) / sizeof(orig) ≈ 12.5 / 32 rtol = 0.01
     @test maximum(abs, ZarrCore.zopen(dir)[:, :] .- orig) ≤ 1e-5
+end
+
+
+@testitem "zarr v3: round-trip, metadata, reopen" begin
+    using ZarrCore, ZarrZfp
+    import JSON
+
+    orig = Float32[sin(x) * cos(y) * sin(z) + 0.2f0 * x for x in range(0, 2π, length = 32), y in range(0, 2π, length = 24), z in range(0, 2π, length = 16)]
+    maxabs = maximum(abs, orig)
+    cases = [
+        (kw = (;),                bound = 0.0),
+        (kw = (; tol = 1e-3),     bound = 1e-3),
+        (kw = (; precision = 24), bound = 2.0^(-(24 - 7)) * maxabs),
+        (kw = (; rate = 16),      bound = 5e-7 * maxabs),
+    ]
+    for c in cases
+        codec = @inferred ZfpyCodec(; c.kw...)
+        dir = mktempdir()
+        arr = ZarrCore.zcreate(Float32, size(orig)...; path = dir, zarr_format = 3, chunks = size(orig), codecs = (codec,))
+        arr[:, :, :] = orig
+
+        # metadata is the numcodecs.zfpy codec with the same parameters as the v2 compressor
+        meta = JSON.parsefile(joinpath(dir, "zarr.json"))
+        @test meta["codecs"] == [Dict("name" => "numcodecs.zfpy", "configuration" => JSON.parse(JSON.json(ZarrZfp._zfpy_config(codec.compressor))))]
+
+        # parsing inverts serialization, and the data comes back within the mode's bound
+        reopened = ZarrCore.zopen(dir)
+        @test reopened.metadata.pipeline.array_bytes == codec
+        @test maximum(abs, reopened[:, :, :] .- orig) ≤ c.bound
+    end
+end
+
+
+@testitem "zarr v3: singleton chunk axes" begin
+    using ZarrCore, ZarrZfp
+
+    orig = Float32[sin(x) * cos(y) + 0.2f0 * z
+                   for x in range(0, 2π, length = 70), y in range(0, 2π, length = 50), z in 1:5]
+
+    # length-1 chunk axes are squeezed as in v2: each plane chunk holds the 2-D encoding of that plane
+    for kw in ((;), (; tol = 1e-3), (; precision = 24), (; rate = 16))
+        dir = mktempdir()
+        ZarrCore.zcreate(Float32, size(orig)...; path = dir, zarr_format = 3, chunks = (64, 48, 1), codecs = (ZfpyCodec(; kw...),))[:, :, :] = orig
+        @test read(joinpath(dir, "c", "0", "0", "0")) == ZarrCore.zcompress(orig[1:64, 1:48, 1], ZfpCompressor(; kw...))
+    end
+
+    # all-length-1 chunks (nothing left to squeeze) and a fill_value/fill_as_missing read still work
+    small = Float32[x + 2y + 4z for x in 1:3, y in 1:3, z in 1:2]
+    dir = mktempdir()
+    ZarrCore.zcreate(Float32, size(small)...; path = dir, zarr_format = 3, chunks = (1, 1, 1), codecs = (ZfpyCodec(),))[:, :, :] = small
+    @test ZarrCore.zopen(dir)[:, :, :] == small
+    dir = mktempdir()
+    ZarrCore.zcreate(Float32, size(small)...; path = dir, zarr_format = 3, chunks = (2, 2, 2), codecs = (ZfpyCodec(),), fill_value = NaN32)[:, :, :] = small
+    @test ZarrCore.zopen(dir; fill_as_missing = true)[:, :, :] == small
+end
+
+
+@testitem "zarr v3: reads arrays written by zarr-python" begin
+    using ZarrCore, ZarrZfp
+    import ZarrZstd  # zarr-python appends its default zstd codec after numcodecs.zfpy
+
+    # zarr-python 3.4, serializer=ZFPY(mode=fixed_accuracy, tolerance=1e-3); its config omits the unused rate/precision keys
+    z = ZarrCore.zopen(joinpath(@__DIR__, "fixtures", "zarr_python_v3_zfpy"))
+    @test z.metadata.pipeline.array_bytes == ZfpyCodec(tol = 1e-3)
+    @test z.metadata.pipeline.bytes_bytes == (ZarrZstd.ZstdV3Codec(0),)
+    orig = Float32[sin(x) * cos(y) + 0.5f0 * x for x in range(0, 2π, length = 64), y in range(0, 2π, length = 48)]
+    @test size(z) == size(orig)
+    @test maximum(abs, z[:, :] .- orig) ≤ 1e-3
+
+    # zarr-python does not squeeze, so the header shape (16, 12, 1) differs from what we would write for such chunks
+    z = ZarrCore.zopen(joinpath(@__DIR__, "fixtures", "zarr_python_v3_zfpy_singleton"))
+    @test z.metadata.chunks == (16, 12, 1)
+    orig = Float32[sin(x) * cos(y) + 0.2f0 * z for x in range(0, 2π, length = 16), y in range(0, 2π, length = 12), z in 1:3]
+    @test maximum(abs, z[:, :, :] .- orig) ≤ 1e-3
 end
