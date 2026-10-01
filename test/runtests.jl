@@ -4,7 +4,7 @@ using TestItemRunner
 
 
 @testitem "round-trip through a Zarr store" begin
-    using Zarr, ZarrZfp
+    using ZarrCore, ZarrZfp
 
     mk2d(T) = T[sin(x) * cos(y) + T(0.5) * x - T(0.3) * y for x in range(0, 2π, length = 64), y in range(0, 2π, length = 48)]
     mk3d(T) = T[sin(x) * cos(y) * sin(z) + T(0.2) * x for x in range(0, 2π, length = 32), y in range(0, 2π, length = 24), z in range(0, 2π, length = 16)]
@@ -25,9 +25,9 @@ using TestItemRunner
         for c in cases
             z = @inferred ZfpCompressor(; c.kw...)
             dir = mktempdir()
-            arr = Zarr.zcreate(eltype(orig), size(orig)...; path = dir, chunks = size(orig), compressor = z)
+            arr = ZarrCore.zcreate(eltype(orig), size(orig)...; path = dir, chunks = size(orig), compressor = z)
             arr[cidx...] = orig
-            back = Zarr.zopen(dir)[cidx...]
+            back = ZarrCore.zopen(dir)[cidx...]
 
             @test eltype(back) == eltype(orig) && size(back) == size(orig)
             @test maximum(abs, back .- orig) ≤ c.bound
@@ -37,65 +37,69 @@ end
 
 
 @testitem "compression shrinks size" begin
-    using Zarr, ZarrZfp
+    using ZarrCore, ZarrZfp
 
     orig = Float64[sin(x) * cos(y) + 0.5x - 0.3y for x in range(0, 2π, length = 64), y in range(0, 2π, length = 48)]
     dir = mktempdir()
-    z = Zarr.zcreate(Float64, size(orig)...; path = dir, chunks = size(orig), compressor = ZfpCompressor(rate = 16))
+    z = ZarrCore.zcreate(Float64, size(orig)...; path = dir, chunks = size(orig), compressor = ZfpCompressor(rate = 16))
     z[:, :] = orig
     @test filesize(joinpath(dir, "0.0")) / sizeof(orig) ≈ 0.25 rtol = 0.01
 end
 
 
 @testitem "codec registration + reopen" begin
-    using Zarr, ZarrZfp
+    using ZarrCore, ZarrZfp
     import JSON
 
-    @test haskey(Zarr.compressortypes, "zfpy")
-    @test Zarr.compressortypes["zfpy"] === ZfpCompressor
+    @test haskey(ZarrCore.compressortypes, "zfpy")
+    @test ZarrCore.compressortypes["zfpy"] === ZfpCompressor
+
+    delete!(ZarrCore.compressortypes, "zfpy")
+    ZarrZfp.register!()
+    @test ZarrCore.compressortypes["zfpy"] === ZfpCompressor
 
     for z in (ZfpCompressor(), ZfpCompressor(tol = 1e-3), ZfpCompressor(precision = 20), ZfpCompressor(rate = 16))
-        @test Zarr.getCompressor(ZfpCompressor, JSON.lower(z)) == z
+        @test ZarrCore.getCompressor(ZfpCompressor, JSON.lower(z)) == z
     end
 
     orig = Float64[sin(x) * cos(y) for x in range(0, 2π, length = 64), y in range(0, 2π, length = 48)]
     dir = mktempdir()
-    z = Zarr.zcreate(Float64, size(orig)...; path = dir, chunks = size(orig), compressor = ZfpCompressor())
+    z = ZarrCore.zcreate(Float64, size(orig)...; path = dir, chunks = size(orig), compressor = ZfpCompressor())
     z[:, :] = orig
-    reopened = Zarr.zopen(dir)
+    reopened = ZarrCore.zopen(dir)
     @test reopened.metadata.compressor == ZfpCompressor()
     @test reopened[:, :] == orig
 end
 
 
 @testitem "invalid configurations throw" begin
-    using Zarr, ZarrZfp
+    using ZarrCore, ZarrZfp
 
     @test_throws ArgumentError ZfpCompressor(; tol = 1e-3, rate = 16)
     @test_throws ArgumentError ZfpCompressor(; tol = 1e-3, precision = 8, rate = 16)
-    @test_throws ArgumentError Zarr.getCompressor(ZfpCompressor,
+    @test_throws ArgumentError ZarrCore.getCompressor(ZfpCompressor,
         Dict("mode" => 1, "tolerance" => -1, "rate" => -1, "precision" => -1))
 end
 
 
 @testitem "length-1 axes are squeezed before encoding" begin
-    using Zarr, ZarrZfp
+    using ZarrCore, ZarrZfp
 
     # A length-1 axis carries no data, so it must encode identically to the same array
     # without it — regardless of where the length-1 axes sit or how many there are.
     base = Float32[sin(x) * cos(y) + 0.5f0 * x for x in range(0, 2π, length = 64), y in range(0, 2π, length = 48)]
     reshapes = [(64, 48, 1), (64, 1, 48), (1, 64, 48), (1, 64, 1, 48), (1, 64, 48, 1)]
     for z in (ZfpCompressor(), ZfpCompressor(tol = 1e-3), ZfpCompressor(precision = 20), ZfpCompressor(rate = 16))
-        want = Zarr.zcompress(base, z)
+        want = ZarrCore.zcompress(base, z)
         for shp in reshapes
-            @test Zarr.zcompress(reshape(base, shp), z) == want
+            @test ZarrCore.zcompress(reshape(base, shp), z) == want
         end
     end
 end
 
 
 @testitem "round-trip through a store with a singleton chunk axis" begin
-    using Zarr, ZarrZfp
+    using ZarrCore, ZarrZfp
 
     # A 3-D array chunked one plane at a time (chunks = (.., .., 1)) is the case the squeeze
     # targets. Non-multiple spatial sizes also exercise partial edge chunks.
@@ -106,9 +110,9 @@ end
              (z = ZfpCompressor(precision = 24), bound = 2.0^(-(24 - 7)) * maxabs)]
     for c in cases
         dir = mktempdir()
-        arr = Zarr.zcreate(Float32, size(orig)...; path = dir, chunks = (64, 48, 1), compressor = c.z)
+        arr = ZarrCore.zcreate(Float32, size(orig)...; path = dir, chunks = (64, 48, 1), compressor = c.z)
         arr[:, :, :] = orig
-        back = Zarr.zopen(dir)[:, :, :]
+        back = ZarrCore.zopen(dir)[:, :, :]
         @test size(back) == size(orig)
         @test maximum(abs, back .- orig) ≤ c.bound
     end
@@ -116,45 +120,45 @@ end
     # Degenerate all-length-1 chunks: nothing to squeeze, must still round-trip (lossless mode).
     small = Float32[x + 2y + 4z for x in 1:3, y in 1:3, z in 1:2]
     dir = mktempdir()
-    arr = Zarr.zcreate(Float32, size(small)...; path = dir, chunks = (1, 1, 1), compressor = ZfpCompressor())
+    arr = ZarrCore.zcreate(Float32, size(small)...; path = dir, chunks = (1, 1, 1), compressor = ZfpCompressor())
     arr[:, :, :] = small
-    @test Zarr.zopen(dir)[:, :, :] == small
+    @test ZarrCore.zopen(dir)[:, :, :] == small
 end
 
 
 @testitem "zuncompress! decodes into the given buffer without an extra copy" begin
-    using Zarr, ZarrZfp
+    using ZarrCore, ZarrZfp
 
     orig = Float32[sin(x) * cos(y) + 0.2f0 * z
                    for x in range(0, 2π, length = 40), y in range(0, 2π, length = 32), z in 1:8]
 
     # lossless: decode reproduces the original exactly, in dest's own memory, allocating no full buffer
-    let z = ZfpCompressor(), comp = Zarr.zcompress(orig, z), dest = similar(orig)
-        @test Zarr.zuncompress!(dest, comp, z) === dest
+    let z = ZfpCompressor(), comp = ZarrCore.zcompress(orig, z), dest = similar(orig)
+        @test ZarrCore.zuncompress!(dest, comp, z) === dest
         @test dest == orig
-        @test (@allocated Zarr.zuncompress!(dest, comp, z)) < sizeof(orig) ÷ 4
+        @test (@allocated ZarrCore.zuncompress!(dest, comp, z)) < sizeof(orig) ÷ 4
     end
 
     # lossy modes: in-place decode matches the allocating path bit-for-bit
     for z in (ZfpCompressor(tol = 1e-3), ZfpCompressor(precision = 24), ZfpCompressor(rate = 16))
-        comp = Zarr.zcompress(orig, z)
+        comp = ZarrCore.zcompress(orig, z)
         dest = similar(orig)
-        @test Zarr.zuncompress!(dest, comp, z) == Zarr.zuncompress(comp, z, Float32)
+        @test ZarrCore.zuncompress!(dest, comp, z) == ZarrCore.zuncompress(comp, z, Float32)
     end
 
     # length-1 chunk axis: dest keeps the full shape while the header carries the squeezed shape
     let plane = reshape(orig[:, :, 1:1], size(orig, 1), size(orig, 2), 1),
-        comp = Zarr.zcompress(plane, ZfpCompressor()), dest = similar(plane)
-        @test Zarr.zuncompress!(dest, comp, ZfpCompressor()) === dest
+        comp = ZarrCore.zcompress(plane, ZfpCompressor()), dest = similar(plane)
+        @test ZarrCore.zuncompress!(dest, comp, ZfpCompressor()) === dest
         @test dest == plane
     end
 
     # a fill-as-missing chunk buffer is a non-dense SenMissArray, which zfp can't decode into: it must
-    # take Zarr's allocate-and-copy fallback (our in-place method is restricted to `DenseArray`), not crash
+    # take ZarrCore's allocate-and-copy fallback (our in-place method is restricted to `DenseArray`), not crash
     let dir = mktempdir()
-        Zarr.zcreate(Float32, size(orig)...; path = dir, chunks = size(orig),
+        ZarrCore.zcreate(Float32, size(orig)...; path = dir, chunks = size(orig),
                      compressor = ZfpCompressor(), fill_value = NaN32)[:, :, :] = orig
-        @test Zarr.zopen(dir; fill_as_missing = true)[:, :, :] == orig
+        @test ZarrCore.zopen(dir; fill_as_missing = true)[:, :, :] == orig
     end
 end
 
@@ -166,4 +170,22 @@ end
 
     import CompatHelperLocal as CHL
     CHL.@check()
+end
+
+
+@testitem "fractional fixed rate" begin
+    using ZarrCore, ZarrZfp
+    import JSON
+
+    # zfp rates are bits per value and need not be integral
+    z = @inferred ZfpCompressor(rate = 12.5)
+    @test ZarrCore.getCompressor(ZfpCompressor, JSON.lower(z)) == z
+    @test JSON.lower(z)["rate"] == 12.5
+
+    orig = Float32[sin(x) * cos(y) + 0.5f0 * x for x in range(0, 2π, length = 64), y in range(0, 2π, length = 48)]
+    dir = mktempdir()
+    arr = ZarrCore.zcreate(Float32, size(orig)...; path = dir, chunks = size(orig), compressor = z)
+    arr[:, :] = orig
+    @test filesize(joinpath(dir, "0.0")) / sizeof(orig) ≈ 12.5 / 32 rtol = 0.01
+    @test maximum(abs, ZarrCore.zopen(dir)[:, :] .- orig) ≤ 1e-5
 end

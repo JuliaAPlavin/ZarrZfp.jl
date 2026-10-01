@@ -1,6 +1,6 @@
 module ZarrZfp
 
-import Zarr
+import ZarrCore
 import JSON
 using ZfpCompression: zfp_compress, zfp_decompress, zfp_decompress!
 
@@ -16,23 +16,23 @@ Pass one of the keywords to select the zfp mode, or none for lossless:
 
   * `tol::Real`         — *fixed-accuracy*: absolute error bound (max abs error ≈ `tol`).
   * `precision::Integer`— *fixed-precision*: number of uncompressed bit planes kept; gives an approximately constant relative error
-  * `rate::Integer`     — *fixed-rate*: exact bits stored per value.
+  * `rate::Real`        — *fixed-rate*: exact bits stored per value.
   * *(none)*            — *reversible*: lossless.
 """
-struct ZfpCompressor <: Zarr.Compressor
+struct ZfpCompressor <: ZarrCore.Compressor
     mode::ZfpMode
     tol::Float64
     precision::Int
-    rate::Int
+    rate::Float64
 end
 
 function ZfpCompressor(; tol = nothing, precision = nothing, rate = nothing)
     n = count(!isnothing, (tol, precision, rate))
     n ≤ 1 || throw(ArgumentError("ZfpCompressor: pass at most one of `tol`, `precision`, `rate` (got $n)"))
     tol       !== nothing ? ZfpCompressor(Accuracy, tol, 0, 0) :
-    precision !== nothing ? ZfpCompressor(Precision, 0.0, precision, 0) :
-    rate      !== nothing ? ZfpCompressor(Rate, 0.0, 0, rate) :
-                            ZfpCompressor(Reversible, 0.0, 0, 0)
+    precision !== nothing ? ZfpCompressor(Precision, 0, precision, 0) :
+    rate      !== nothing ? ZfpCompressor(Rate, 0, 0, rate) :
+                            ZfpCompressor(Reversible, 0, 0, 0)
 end
 
 _zfp_kw(z::ZfpCompressor) =
@@ -45,17 +45,17 @@ _zfp_kw(z::ZfpCompressor) =
 # Squeeze length-1 axes before encoding; zfp records the shape, so decode stays unchanged.
 _squeeze(a) = (dims = Tuple(findall(isone, size(a)));
                length(dims) < ndims(a) ? dropdims(a; dims) : a)
-Zarr.zcompress(a, z::ZfpCompressor) = zfp_compress(_squeeze(a); _zfp_kw(z)...)
+ZarrCore.zcompress(a, z::ZfpCompressor) = zfp_compress(_squeeze(a); _zfp_kw(z)...)
 
 # zfp stores type and shape in the stream header.
-Zarr.zuncompress(a, ::ZfpCompressor, T) = zfp_decompress(a)
+ZarrCore.zuncompress(a, ::ZfpCompressor, T) = zfp_decompress(a)
 
 # In-place read path: decode into Zarr's own dense output buffer, skipping the allocate-and-copy fallback
 # (a non-dense fill-as-missing buffer isn't handled by zfp, so it takes that fallback). Squeeze length-1
 # axes as `zcompress` does, so `data`'s shape matches the shape recorded in the header.
-Zarr.zuncompress!(data::DenseArray, compressed, ::ZfpCompressor) = (zfp_decompress!(_squeeze(data), compressed); data)
+ZarrCore.zuncompress!(data::DenseArray, compressed, ::ZfpCompressor) = (zfp_decompress!(_squeeze(data), compressed); data)
 
-function Zarr.getCompressor(::Type{ZfpCompressor}, d::Dict)
+function ZarrCore.getCompressor(::Type{ZfpCompressor}, d::Dict)
     m = d["mode"]
     m == Int(Rate)       ? ZfpCompressor(; rate = d["rate"]) :
     m == Int(Precision)  ? ZfpCompressor(; precision = d["precision"]) :
@@ -72,9 +72,15 @@ function JSON.lower(z::ZfpCompressor)
          "precision" => z.mode === Precision ? z.precision : -1)
 end
 
-# Runtime registration survives precompilation.
-function __init__()
-    Zarr.compressortypes["zfpy"] = ZfpCompressor
-end
+"""
+    ZarrZfp.register!()
+
+Register `ZfpCompressor` with ZarrCore under the Zarr v2 compressor name `"zfpy"`.
+Runs automatically when the package loads unless the ZarrCore `RegisterAtInit` preference is disabled.
+"""
+register!() = (ZarrCore.compressortypes["zfpy"] = ZfpCompressor; nothing)
+
+# Registry mutation must happen at runtime, not during precompilation.
+__init__() = ZarrCore.should_register_at_init() && register!()
 
 end
