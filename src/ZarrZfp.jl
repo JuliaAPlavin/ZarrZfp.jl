@@ -12,13 +12,18 @@ export ZfpCompressor, ZfpyCodec
 """
     ZfpCompressor(; tol, precision, rate)
 
-A [Zarr](https://github.com/JuliaIO/Zarr.jl) `Compressor` backed by zfp (via ZfpCompression.jl).
+A [Zarr](https://github.com/JuliaIO/Zarr.jl) v2 compressor backed by zfp (via ZfpCompression.jl),
+registered as `zfpy` and compatible with numcodecs' `ZFPY`.
 Pass one of the keywords to select the zfp mode, or none for lossless:
 
-  * `tol::Real`         — *fixed-accuracy*: absolute error bound (max abs error ≈ `tol`).
-  * `precision::Integer`— *fixed-precision*: number of uncompressed bit planes kept; gives an approximately constant relative error
-  * `rate::Real`        — *fixed-rate*: exact bits stored per value.
-  * *(none)*            — *reversible*: lossless.
+  * `tol::Real`          — *fixed-accuracy*: absolute error bound (max abs error ≤ `tol`).
+  * `precision::Integer` — *fixed-precision*: number of bit planes encoded; gives an approximately constant relative error.
+  * `rate::Real`         — *fixed-rate*: exact bits stored per value.
+  * *(none)*             — *reversible*: lossless.
+
+```julia
+zcreate(Float32, dims...; compressor = ZfpCompressor(rate = 16))
+```
 """
 struct ZfpCompressor <: ZarrCore.Compressor
     mode::ZfpMode
@@ -43,7 +48,8 @@ _zfp_kw(z::ZfpCompressor) =
                            NamedTuple()
 
 # zfp pads every field axis to a full block, so a length-1 axis wastes a whole block.
-# Squeeze length-1 axes before encoding; zfp records the shape, so decode stays unchanged.
+# Squeeze length-1 axes before encoding. zfp records the encoded shape in its header: the allocating
+# decode returns that shape, and the in-place decode squeezes its destination the same way.
 _squeeze(a) = (dims = Tuple(findall(isone, size(a)));
                length(dims) < ndims(a) ? dropdims(a; dims) : a)
 ZarrCore.zcompress(a, z::ZfpCompressor) = zfp_compress(_squeeze(a); _zfp_kw(z)...)
@@ -77,11 +83,11 @@ JSON.lower(z::ZfpCompressor) = merge(Dict("id" => "zfpy"), _zfpy_config(z))
 """
     ZfpyCodec(; tol, precision, rate)
 
-The Zarr v3 array->bytes codec named `numcodecs.zfpy`, as in by zarr-python. The same zfp stream
-(with header) and the same parameters as [`ZfpCompressor`](@ref).
+The Zarr v3 array->bytes codec named `numcodecs.zfpy`, as in zarr-python. Writes the same zfp stream
+(with header) and takes the same parameters as [`ZfpCompressor`](@ref).
 
 ```julia
-zcreate(Float32, dims...; zarr_format = 3, codecs = (ZfpyCodec(tol = 1e-3),))
+zcreate(Float32, dims...; zarr_format = 3, codecs = (ZfpyCodec(rate = 16),))
 ```
 """
 struct ZfpyCodec <: V3Codec{:array, :bytes}
