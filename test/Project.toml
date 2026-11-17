@@ -11,7 +11,7 @@ ZfpCompression = "43441a71-1662-41c6-b8ea-40ed1525242b"
 
 [compat]
 Aqua = "0.8.16"
-CompatHelperLocal = "0.1.29"
+CompatHelperLocal = "0.2"
 Test = "1.10"
 TestItemRunner = "1.1.5"
 TestItems = "1.0.0"
